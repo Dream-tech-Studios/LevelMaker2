@@ -1,9 +1,9 @@
 {
   "Version": 1,
-  "WorkspaceRootPath": "V:\\projects\\LevelMaker\\",
+  "WorkspaceRootPath": "V:\\projects\\LevelMaker2\\LevelMaker\\",
   "Documents": [
     {
-      "AbsoluteMoniker": "D:0:0:{5435F168-D968-4E1C-B80B-90CC52910FA7}|LevelMaker.vcxproj|V:\\projects\\LevelMaker\\LevelMaker.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
+      "AbsoluteMoniker": "D:0:0:{5435F168-D968-4E1C-B80B-90CC52910FA7}|LevelMaker.vcxproj|V:\\projects\\LevelMaker2\\LevelMaker\\LevelMaker.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
       "RelativeMoniker": "D:0:0:{5435F168-D968-4E1C-B80B-90CC52910FA7}|LevelMaker.vcxproj|solutionrelative:LevelMaker.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
     }
   ],
@@ -20,9 +20,9 @@
               "$type": "Document",
               "DocumentIndex": 0,
               "Title": "LevelMaker.cpp",
-              "DocumentMoniker": "V:\\projects\\LevelMaker\\LevelMaker.cpp",
+              "DocumentMoniker": "V:\\projects\\LevelMaker2\\LevelMaker\\LevelMaker.cpp",
               "RelativeDocumentMoniker": "LevelMaker.cpp",
-              "ToolTip": "V:\\projects\\LevelMaker\\LevelMaker.cpp",
+              "ToolTip": "V:\\projects\\LevelMaker2\\LevelMaker\\LevelMaker.cpp",
               "RelativeToolTip": "LevelMaker.cpp",
               "ViewState": "AgIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000677|",

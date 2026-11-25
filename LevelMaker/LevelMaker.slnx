@@ -3,5 +3,5 @@
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
-  <Project Path="LevelMaker.vcxproj" />
+  <Project Path="LevelMaker.vcxproj" Id="5435f168-d968-4e1c-b80b-90cc52910fa7" />
 </Solution>

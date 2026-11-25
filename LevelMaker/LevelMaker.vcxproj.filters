@@ -27,9 +27,24 @@
     <ClInclude Include="LevelMaker.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="LevelApp.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="LevelGrid.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="LevelMaker.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="LevelGrid.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="View2D.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="View3D.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

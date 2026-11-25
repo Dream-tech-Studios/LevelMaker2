@@ -1,0 +1,17 @@
+# Visual Studio local state and build output
+.vs/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+*.user
+*.suo
+*.vcxproj.user
+*.aps
+*.pdb
+*.ilk
+*.exe
+*.log
+*.tlog
+*.idb
+*.ipch
