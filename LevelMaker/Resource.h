@@ -34,6 +34,13 @@
 #define IDM_BRUSH_DEC			32784
 #define IDM_BRUSH_INC			32785
 #define IDM_HELP_KEYS			32786
+#define IDM_EXPORT_FBX			32787
+#define IDM_STRAIGHT			32788
+#define IDM_ROT_LEFT			32789
+#define IDM_ROT_RIGHT			32790
+#define IDM_FACE_INWARD			32791
+#define IDM_FACE_OUTWARD		32792
+#define IDM_FACE_BOTH			32793
 
 // brush presets: IDM_BRUSH_SIZE_BASE + n selects a brush n cells wide
 #define IDM_BRUSH_SIZE_BASE		32800
@@ -41,6 +48,8 @@
 #define IDM_WALLH_BASE			32840
 // cell size presets, likewise
 #define IDM_CELLSZ_BASE			32860
+// drawing angle presets: IDM_ANGLE_BASE + n is n * 45 degrees
+#define IDM_ANGLE_BASE			32880
 
 // Next default values for new objects
 //
@@ -49,7 +58,7 @@
 
 #define _APS_NO_MFC					130
 #define _APS_NEXT_RESOURCE_VALUE	129
-#define _APS_NEXT_COMMAND_VALUE		32880
+#define _APS_NEXT_COMMAND_VALUE		32900
 #define _APS_NEXT_CONTROL_VALUE		1000
 #define _APS_NEXT_SYMED_VALUE		110
 #endif

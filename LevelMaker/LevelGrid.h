@@ -12,6 +12,16 @@ struct LmVec3
     float x, y, z;
 };
 
+// Which way the generated surfaces look. A hall is interior space, so the
+// walls face the floor by default; Outward flips everything, Both emits each
+// quad twice so the mesh reads as solid from either side.
+enum LmFacing
+{
+    LM_FACE_INWARD = 0,
+    LM_FACE_OUTWARD,
+    LM_FACE_BOTH
+};
+
 enum LmMaterial
 {
     LM_MAT_FLOOR = 0,
@@ -46,6 +56,21 @@ struct LmMesh
     size_t TriangleCount() const { return quads.size() * 2; }
 };
 
+// Drawing directions for the plan view's straight-line mode. 0 degrees is
+// east and angles step counter-clockwise on screen, so the y component is
+// negative for "north" (plan-view y grows downward).
+struct LmDir
+{
+    int dx;
+    int dy;
+};
+
+LmDir LmDirForAngle(int degrees);
+// nearest of the eight directions to a drag, or fallbackDegrees if it is zero
+int   LmSnapAngle(int dx, int dy, int fallbackDegrees);
+// how many whole steps along dir a drag of (dx, dy) reaches; never negative
+int   LmStepsAlong(int dx, int dy, LmDir dir);
+
 class LevelGrid
 {
 public:
@@ -73,6 +98,8 @@ public:
 
     // --- undo / redo ----------------------------------------------------
     void BeginStroke();                 // snapshot before a drag
+    void RevertStroke();                // back to the snapshot, stroke still open
+    bool StrokeActive() const { return m_strokeActive; }
     void EndStroke();                   // commit the snapshot if anything moved
     bool Undo();
     bool Redo();
@@ -85,11 +112,12 @@ public:
     void  SetCellSize(float s) { m_cellSize = s; }
     void  SetWallHeight(float h) { m_wallHeight = h; }
 
-    void BuildMesh(LmMesh& out, bool includeCeiling) const;
+    void BuildMesh(LmMesh& out, bool includeCeiling, LmFacing facing) const;
 
     bool Save(const wchar_t* path) const;
     bool Load(const wchar_t* path);
-    bool ExportObj(const wchar_t* path, bool includeCeiling) const;
+    bool ExportObj(const wchar_t* path, bool includeCeiling, LmFacing facing) const;
+    bool ExportFbxAscii(const wchar_t* path, bool includeCeiling, LmFacing facing) const;
 
 private:
     void PushUndo(const std::vector<uint8_t>& state);

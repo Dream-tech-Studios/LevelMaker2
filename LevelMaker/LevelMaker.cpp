@@ -42,6 +42,7 @@ const int   kCellSizeCount   = (int)(sizeof(kCellSizes) / sizeof(kCellSizes[0]))
 
 const wchar_t kLevelFilter[] = L"LevelMaker level (*.lvl)\0*.lvl\0All files (*.*)\0*.*\0";
 const wchar_t kObjFilter[]   = L"Wavefront OBJ (*.obj)\0*.obj\0All files (*.*)\0*.*\0";
+const wchar_t kFbxFilter[]   = L"ASCII FBX (*.fbx)\0*.fbx\0All files (*.*)\0*.*\0";
 
 // ---------------------------------------------------------------- helpers
 
@@ -120,7 +121,7 @@ void UpdateTitle()
 void UpdateStats()
 {
     LmMesh mesh;
-    g_app.grid.BuildMesh(mesh, g_app.showCeiling);
+    g_app.grid.BuildMesh(mesh, g_app.showCeiling, g_app.facing);
     g_stats.cells = g_app.grid.FloorCount();
     g_stats.quads = mesh.quads.size();
     g_stats.tris = mesh.TriangleCount();
@@ -156,6 +157,18 @@ void SetBrush(int n)
         InvalidateStrip(g_app.hMain);
 }
 
+void SetAngle(int degrees)
+{
+    int a = degrees % 360;
+    if (a < 0)
+        a += 360;
+    g_app.drawAngle = a;
+    if (g_app.hView2D)
+        View2D_AngleChanged(g_app.hView2D);
+    if (g_app.hMain)
+        InvalidateStrip(g_app.hMain);
+}
+
 void DrawStrip(HWND hwnd, HDC hdc)
 {
     RECT rc;
@@ -180,14 +193,19 @@ void DrawStrip(HWND hwnd, HDC hdc)
     tr.top += 7;
     SetTextColor(hdc, RGB(150, 158, 172));
     const wchar_t* help =
-        L"Hold LEFT to trace a hall  \x2022  RIGHT erases  \x2022  MIDDLE pans  \x2022  wheel zooms"
-        L"  \x2022  [ ] brush width  \x2022  F fit  \x2022  R camera";
+        g_app.straightMode
+            ? L"Hold LEFT to lay a straight hall  \x2022  A / D turn 45\x00B0  \x2022  S back to freehand"
+              L"  \x2022  RIGHT erases  \x2022  [ ] width"
+            : L"Hold LEFT to trace a hall  \x2022  Shift = straight  \x2022  S locks an angle"
+              L"  \x2022  RIGHT erases  \x2022  MIDDLE pans  \x2022  [ ] width";
     DrawTextW(hdc, help, -1, &tr, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
 
-    wchar_t stats[160];
-    swprintf(stats, 160,
-             L"brush %d  \x2022  %d cells  \x2022  %u quads  \x2022  %u tris",
-             g_app.brush, g_stats.cells, (unsigned)g_stats.quads, (unsigned)g_stats.tris);
+    static const wchar_t* kFacingName[] = { L"inward", L"outward", L"both sides" };
+    wchar_t stats[200];
+    swprintf(stats, 200,
+             L"hall %d  \x2022  faces %s  \x2022  %d cells  \x2022  %u quads  \x2022  %u tris",
+             g_app.brush, kFacingName[(int)g_app.facing], g_stats.cells,
+             (unsigned)g_stats.quads, (unsigned)g_stats.tris);
     RECT sr = rc;
     sr.right -= 12;
     sr.top += 7;
@@ -344,7 +362,7 @@ void DoExportObj(HWND hwnd)
                                                : SwapExtension(g_app.filePath, L".obj");
     if (!PromptForPath(hwnd, true, kObjFilter, L"obj", L"Export OBJ", path))
         return;
-    if (!g_app.grid.ExportObj(path.c_str(), g_app.showCeiling))
+    if (!g_app.grid.ExportObj(path.c_str(), g_app.showCeiling, g_app.facing))
     {
         MessageBoxW(hwnd, L"Could not write that OBJ file.", L"LevelMaker", MB_OK | MB_ICONERROR);
         return;
@@ -354,6 +372,33 @@ void DoExportObj(HWND hwnd)
     swprintf(msg, 512,
              L"Exported %u quads (%u triangles) to\n%s\n\nA matching .mtl file was written "
              L"alongside it.",
+             (unsigned)g_stats.quads, (unsigned)g_stats.tris, FileNameOf(path).c_str());
+    MessageBoxW(hwnd, msg, L"LevelMaker", MB_OK | MB_ICONINFORMATION);
+}
+
+void DoExportFbx(HWND hwnd)
+{
+    if (g_app.grid.FloorCount() == 0)
+    {
+        MessageBoxW(hwnd, L"Nothing to export yet -- trace a hall in the plan view first.",
+                    L"LevelMaker", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    std::wstring path = g_app.filePath.empty() ? std::wstring(L"level.fbx")
+                                               : SwapExtension(g_app.filePath, L".fbx");
+    if (!PromptForPath(hwnd, true, kFbxFilter, L"fbx", L"Export ASCII FBX", path))
+        return;
+    if (!g_app.grid.ExportFbxAscii(path.c_str(), g_app.showCeiling, g_app.facing))
+    {
+        MessageBoxW(hwnd, L"Could not write that FBX file.", L"LevelMaker", MB_OK | MB_ICONERROR);
+        return;
+    }
+
+    wchar_t msg[512];
+    swprintf(msg, 512,
+             L"Exported %u quads (%u triangles) to\n%s\n\nASCII FBX 7.4, one mesh with "
+             L"floor, wall and ceiling materials.",
              (unsigned)g_stats.quads, (unsigned)g_stats.tris, FileNameOf(path).c_str());
     MessageBoxW(hwnd, msg, L"LevelMaker", MB_OK | MB_ICONINFORMATION);
 }
@@ -369,14 +414,19 @@ void ShowControls(HWND hwnd)
         L"    [ and ]                             -  narrower / wider hall\n"
         L"    1 - 9                                 -  set hall width directly\n"
         L"    F                                        -  fit the view to the level\n\n"
+        L"STRAIGHT HALLS\n"
+        L"    S                 -  lock drawing to one direction\n"
+        L"    A / D            -  turn that direction 45 degrees left / right\n"
+        L"    Shift + drag  -  one straight hall, angle snapped to the drag\n\n"
         L"3D PREVIEW (right)\n"
         L"    Left drag    -  orbit\n"
         L"    Right drag  -  pan\n"
         L"    Wheel         -  zoom\n"
         L"    R                 -  reset the camera\n"
         L"    C / W / X   -  ceilings / quad outlines / cutaway\n\n"
-        L"Ctrl+Z undo, Ctrl+Y redo, Ctrl+S save, Ctrl+E export OBJ.\n"
-        L"Drag the bar between the panes to resize them.",
+        L"Ctrl+Z undo, Ctrl+Y redo, Ctrl+S save.\n"
+        L"Ctrl+E exports OBJ, Ctrl+F exports ASCII FBX.\n"
+        L"Settings > Wall Faces picks inward, outward or both sides.",
         L"LevelMaker Controls", MB_OK | MB_ICONINFORMATION);
 }
 
@@ -406,6 +456,13 @@ void SyncMenu(HWND hwnd)
                       MF_BYCOMMAND | ((g_app.brush == kBrushPresets[i]) ? MF_CHECKED : MF_UNCHECKED));
     }
 
+    CheckMenuItem(menu, IDM_STRAIGHT,
+                  MF_BYCOMMAND | (g_app.straightMode ? MF_CHECKED : MF_UNCHECKED));
+    CheckMenuRadioItem(menu, IDM_FACE_INWARD, IDM_FACE_BOTH,
+                       IDM_FACE_INWARD + (int)g_app.facing, MF_BYCOMMAND);
+    CheckMenuRadioItem(menu, IDM_ANGLE_BASE, IDM_ANGLE_BASE + 7,
+                       IDM_ANGLE_BASE + (g_app.drawAngle / 45) % 8, MF_BYCOMMAND);
+
     for (int i = 0; i < kWallHeightCount; ++i)
     {
         const bool on = (g_app.grid.WallHeight() == kWallHeights[i]);
@@ -423,6 +480,11 @@ bool HandleCommand(HWND hwnd, int id)
     if (id > IDM_BRUSH_SIZE_BASE && id <= IDM_BRUSH_SIZE_BASE + 24)
     {
         SetBrush(id - IDM_BRUSH_SIZE_BASE);
+        return true;
+    }
+    if (id >= IDM_ANGLE_BASE && id < IDM_ANGLE_BASE + 8)
+    {
+        SetAngle((id - IDM_ANGLE_BASE) * 45);
         return true;
     }
     if (id >= IDM_WALLH_BASE && id < IDM_WALLH_BASE + kWallHeightCount)
@@ -451,6 +513,7 @@ bool HandleCommand(HWND hwnd, int id)
     case IDM_SAVE:        DoSave(hwnd); return true;
     case IDM_SAVEAS:      DoSaveAs(hwnd); return true;
     case IDM_EXPORT_OBJ:  DoExportObj(hwnd); return true;
+    case IDM_EXPORT_FBX:  DoExportFbx(hwnd); return true;
     case IDM_EXIT:        PostMessageW(hwnd, WM_CLOSE, 0, 0); return true;
 
     case IDM_UNDO:
@@ -508,6 +571,23 @@ bool HandleCommand(HWND hwnd, int id)
     case IDM_BRUSH_DEC:   SetBrush(g_app.brush - 1); return true;
     case IDM_BRUSH_INC:   SetBrush(g_app.brush + 1); return true;
 
+    case IDM_STRAIGHT:
+        g_app.straightMode = !g_app.straightMode;
+        if (g_app.hView2D)
+            InvalidateRect(g_app.hView2D, NULL, FALSE);
+        InvalidateStrip(hwnd);
+        return true;
+
+    case IDM_ROT_LEFT:    SetAngle(g_app.drawAngle + 45); return true;
+    case IDM_ROT_RIGHT:   SetAngle(g_app.drawAngle - 45); return true;
+
+    case IDM_FACE_INWARD:
+    case IDM_FACE_OUTWARD:
+    case IDM_FACE_BOTH:
+        g_app.facing = (LmFacing)(id - IDM_FACE_INWARD);
+        RefreshAll(true);
+        return true;
+
     case IDM_HELP_KEYS:   ShowControls(hwnd); return true;
 
     default:
@@ -531,6 +611,9 @@ void HandleKey(HWND hwnd, int vk)
     {
     case VK_OEM_4: SetBrush(g_app.brush - 1); break;   // [
     case VK_OEM_6: SetBrush(g_app.brush + 1); break;   // ]
+    case 'A':      HandleCommand(hwnd, IDM_ROT_LEFT); break;
+    case 'D':      HandleCommand(hwnd, IDM_ROT_RIGHT); break;
+    case 'S':      HandleCommand(hwnd, IDM_STRAIGHT); break;
     case 'F':      HandleCommand(hwnd, IDM_FITVIEW); break;
     case 'R':      HandleCommand(hwnd, IDM_RESETCAM); break;
     case 'C':      HandleCommand(hwnd, IDM_CEILING); break;
@@ -718,7 +801,7 @@ ATOM MyRegisterClass(HINSTANCE hInstance)
     wcex.hIcon = LoadIconW(hInstance, MAKEINTRESOURCEW(IDI_LEVELMAKER));
     wcex.hCursor = LoadCursor(NULL, IDC_ARROW);
     wcex.hbrBackground = CreateSolidBrush(RGB(18, 20, 24));
-    wcex.lpszMenuName = g_windowClass;
+    wcex.lpszMenuName = MAKEINTRESOURCEW(IDC_LEVELMAKER);
     wcex.lpszClassName = g_windowClass;
     wcex.hIconSm = LoadIconW(hInstance, MAKEINTRESOURCEW(IDI_SMALL));
     return RegisterClassExW(&wcex);
@@ -728,10 +811,23 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 {
     g_hInst = hInstance;
 
+    // The menu lives in the resources under a numeric id, so load it here and
+    // hand it to the window directly rather than looking it up by name.
+    HMENU hMenu = LoadMenuW(hInstance, MAKEINTRESOURCEW(IDC_LEVELMAKER));
+    if (!hMenu)
+    {
+        MessageBoxW(NULL, L"The menu bar resource could not be loaded.", L"LevelMaker",
+                    MB_OK | MB_ICONWARNING);
+    }
+
     HWND hwnd = CreateWindowExW(0, g_windowClass, g_title, WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
-                                CW_USEDEFAULT, 0, 1280, 800, NULL, NULL, hInstance, NULL);
+                                CW_USEDEFAULT, 0, 1280, 800, NULL, hMenu, hInstance, NULL);
     if (!hwnd)
+    {
+        if (hMenu)
+            DestroyMenu(hMenu);
         return FALSE;
+    }
 
     ShowWindow(hwnd, nCmdShow);
     UpdateWindow(hwnd);

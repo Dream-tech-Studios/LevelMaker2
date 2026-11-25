@@ -27,6 +27,14 @@ struct View2DState
     int   lastCellX;
     int   lastCellY;
 
+    bool  straightStroke;   // this drag draws one straight segment
+    bool  snapDrag;         // ...with the angle following the drag (Shift)
+    int   anchorX;          // where the straight segment starts
+    int   anchorY;
+    bool  strokeFloor;      // painting floor, or erasing
+    int   lastMouseX;       // client coords, so A/D can redraw the segment
+    int   lastMouseY;
+
     POINT panAnchor;
     float panCamX;
     float panCamY;
@@ -44,6 +52,9 @@ struct View2DState
         : camX(0.0f), camY(0.0f), zoom(9.0f)
         , painting(false), erasing(false), panning(false)
         , lastCellX(0), lastCellY(0)
+        , straightStroke(false), snapDrag(false)
+        , anchorX(0), anchorY(0), strokeFloor(true)
+        , lastMouseX(0), lastMouseY(0)
         , panCamX(0.0f), panCamY(0.0f)
         , mouseCellX(0), mouseCellY(0), hasMouse(false)
         , memDC(NULL), memBmp(NULL), memW(0), memH(0)
@@ -58,6 +69,8 @@ inline float Clampf(float v, float lo, float hi)
 {
     return (v < lo) ? lo : ((v > hi) ? hi : v);
 }
+
+
 
 void ScreenToCellF(const RECT& rc, int px, int py, float& cx, float& cy)
 {
@@ -285,6 +298,26 @@ void DrawPlan(HDC hdc, const RECT& rc)
         DeleteObject(wallPen);
     }
 
+    // guide line showing the locked drawing direction
+    if (g_app.straightMode && (g_v.hasMouse || g_v.straightStroke))
+    {
+        const LmDir d = LmDirForAngle(g_app.drawAngle);
+        const float ox = (float)(g_v.straightStroke ? g_v.anchorX : g_v.mouseCellX) + 0.5f;
+        const float oy = (float)(g_v.straightStroke ? g_v.anchorY : g_v.mouseCellY) + 0.5f;
+        const float reach = 400.0f;
+
+        float ax = 0.0f, ay = 0.0f, bx = 0.0f, by = 0.0f;
+        CellToScreen(rc, ox - d.dx * reach, oy - d.dy * reach, ax, ay);
+        CellToScreen(rc, ox + d.dx * reach, oy + d.dy * reach, bx, by);
+
+        HPEN guide = CreatePen(PS_DOT, 1, RGB(96, 112, 140));
+        HGDIOBJ oldPen = SelectObject(hdc, guide);
+        MoveToEx(hdc, (int)ax, (int)ay, NULL);
+        LineTo(hdc, (int)bx, (int)by);
+        SelectObject(hdc, oldPen);
+        DeleteObject(guide);
+    }
+
     // brush footprint under the cursor
     if (g_v.hasMouse)
     {
@@ -306,10 +339,21 @@ void DrawPlan(HDC hdc, const RECT& rc)
 
     // HUD
     {
-        wchar_t text[160];
-        swprintf(text, 160,
-                 L"PLAN  \x2022  brush %d cells  \x2022  cell %d, %d  \x2022  %.0f px/cell",
-                 g_app.brush, g_v.mouseCellX, g_v.mouseCellY, g_v.zoom);
+        wchar_t text[200];
+        if (g_app.straightMode)
+        {
+            swprintf(text, 200,
+                     L"PLAN  \x2022  hall %d cells  \x2022  STRAIGHT %d\x00B0 (A / D)"
+                     L"  \x2022  cell %d, %d  \x2022  %.0f px/cell",
+                     g_app.brush, g_app.drawAngle, g_v.mouseCellX, g_v.mouseCellY, g_v.zoom);
+        }
+        else
+        {
+            swprintf(text, 200,
+                     L"PLAN  \x2022  hall %d cells  \x2022  freehand (hold Shift for straight)"
+                     L"  \x2022  cell %d, %d  \x2022  %.0f px/cell",
+                     g_app.brush, g_v.mouseCellX, g_v.mouseCellY, g_v.zoom);
+        }
         HGDIOBJ oldFont = SelectObject(hdc, GetStockObject(DEFAULT_GUI_FONT));
         SetBkMode(hdc, TRANSPARENT);
         SetTextColor(hdc, RGB(150, 158, 172));
@@ -320,8 +364,44 @@ void DrawPlan(HDC hdc, const RECT& rc)
     }
 }
 
+// The straight segment is rebuilt from the anchor on every mouse move, so the
+// stroke can grow and shrink while the button is held.
+void PaintStraight(HWND hwnd)
+{
+    RECT rc;
+    GetClientRect(hwnd, &rc);
+    int cx = 0, cy = 0;
+    ScreenToCell(rc, g_v.lastMouseX, g_v.lastMouseY, cx, cy);
+
+    const int dx = cx - g_v.anchorX;
+    const int dy = cy - g_v.anchorY;
+    if (g_v.snapDrag)
+        g_app.drawAngle = LmSnapAngle(dx, dy, g_app.drawAngle);
+
+    const LmDir d = LmDirForAngle(g_app.drawAngle);
+    const int steps = LmStepsAlong(dx, dy, d);
+
+    g_app.grid.RevertStroke();
+    g_app.grid.PaintLine(g_v.anchorX, g_v.anchorY,
+                         g_v.anchorX + d.dx * steps, g_v.anchorY + d.dy * steps,
+                         g_app.brush, g_v.strokeFloor);
+
+    g_v.lastCellX = g_v.anchorX + d.dx * steps;
+    g_v.lastCellY = g_v.anchorY + d.dy * steps;
+    App_GridChanged();
+}
+
 void PaintAt(HWND hwnd, int px, int py, bool first, bool floorValue)
 {
+    g_v.lastMouseX = px;
+    g_v.lastMouseY = py;
+
+    if (g_v.straightStroke)
+    {
+        PaintStraight(hwnd);
+        return;
+    }
+
     RECT rc;
     GetClientRect(hwnd, &rc);
     int cx = 0, cy = 0;
@@ -351,6 +431,8 @@ void EndStroke(HWND hwnd)
     g_v.painting = false;
     g_v.erasing = false;
     g_v.panning = false;
+    g_v.straightStroke = false;
+    g_v.snapDrag = false;
     if (GetCapture() == hwnd)
         ReleaseCapture();
     App_StatusChanged();
@@ -399,11 +481,21 @@ LRESULT CALLBACK View2DProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         if (g_v.painting || g_v.erasing || g_v.panning)
             return 0;
         const bool floorValue = (msg == WM_LBUTTONDOWN);
+        const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+        const int mx = GET_X_LPARAM(lParam);
+        const int my = GET_Y_LPARAM(lParam);
+
+        RECT rc;
+        GetClientRect(hwnd, &rc);
         SetCapture(hwnd);
         g_app.grid.BeginStroke();
         g_v.painting = floorValue;
         g_v.erasing = !floorValue;
-        PaintAt(hwnd, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), true, floorValue);
+        g_v.strokeFloor = floorValue;
+        g_v.straightStroke = g_app.straightMode || shift;
+        g_v.snapDrag = shift && !g_app.straightMode;
+        ScreenToCell(rc, mx, my, g_v.anchorX, g_v.anchorY);
+        PaintAt(hwnd, mx, my, true, floorValue);
         return 0;
     }
 
@@ -432,6 +524,7 @@ LRESULT CALLBACK View2DProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             if (g_v.painting || g_v.erasing)
                 g_app.grid.EndStroke();
             g_v.painting = g_v.erasing = g_v.panning = false;
+            g_v.straightStroke = g_v.snapDrag = false;
         }
         return 0;
 
@@ -443,6 +536,8 @@ LRESULT CALLBACK View2DProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         GetClientRect(hwnd, &rc);
         ScreenToCell(rc, mx, my, g_v.mouseCellX, g_v.mouseCellY);
         g_v.hasMouse = true;
+        g_v.lastMouseX = mx;
+        g_v.lastMouseY = my;
 
         if (g_v.panning)
         {
@@ -533,6 +628,14 @@ HWND View2D_Create(HWND parent, HINSTANCE hInstance)
 {
     return CreateWindowExW(0, kClassName, L"", WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
                            0, 0, 10, 10, parent, NULL, hInstance, NULL);
+}
+
+void View2D_AngleChanged(HWND hwnd)
+{
+    // redraw the segment under the cursor if a straight stroke is in progress
+    if (g_v.straightStroke && !g_v.snapDrag)
+        PaintStraight(hwnd);
+    InvalidateRect(hwnd, NULL, FALSE);
 }
 
 void View2D_FitToLevel(HWND hwnd)

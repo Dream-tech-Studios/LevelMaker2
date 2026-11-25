@@ -14,6 +14,9 @@ struct AppState
 {
     LevelGrid    grid;
     int          brush;        // stamp width in cells
+    bool         straightMode; // strokes are locked to one direction
+    int          drawAngle;    // that direction, in 45 degree steps
+    LmFacing     facing;       // which way generated surfaces look
     bool         showCeiling;  // ceilings in the preview and in exports
     bool         showWire;     // draw quad outlines in the 3D preview
     bool         cutaway;      // cull back faces, so you can see into the halls
@@ -26,9 +29,12 @@ struct AppState
 
     AppState()
         : brush(3)
+        , straightMode(false)
+        , drawAngle(0)
+        , facing(LM_FACE_INWARD)
         , showCeiling(false)
         , showWire(true)
-        , cutaway(true)
+        , cutaway(false)   // off by default: the blockout reads as solid
         , modified(false)
         , hMain(NULL)
         , hView2D(NULL)
@@ -43,6 +49,7 @@ extern AppState g_app;
 bool View2D_Register(HINSTANCE hInstance);
 HWND View2D_Create(HWND parent, HINSTANCE hInstance);
 void View2D_FitToLevel(HWND hwnd);
+void View2D_AngleChanged(HWND hwnd);
 
 // 3D preview (OpenGL)
 bool View3D_Register(HINSTANCE hInstance);

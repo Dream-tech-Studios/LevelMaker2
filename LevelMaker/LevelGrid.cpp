@@ -18,6 +18,49 @@ const uint32_t kVersion = 1;
 
 } // namespace
 
+// --------------------------------------------------------- draw directions
+
+namespace {
+
+const LmDir kDirs[8] = {
+    { 1, 0 }, { 1, -1 }, { 0, -1 }, { -1, -1 },
+    { -1, 0 }, { -1, 1 }, { 0, 1 }, { 1, 1 }
+};
+
+int AngleIndex(int degrees)
+{
+    int i = (degrees / 45) % 8;
+    if (i < 0)
+        i += 8;
+    return i;
+}
+
+} // namespace
+
+LmDir LmDirForAngle(int degrees)
+{
+    return kDirs[AngleIndex(degrees)];
+}
+
+int LmSnapAngle(int dx, int dy, int fallbackDegrees)
+{
+    if (dx == 0 && dy == 0)
+        return AngleIndex(fallbackDegrees) * 45;
+    float deg = atan2f(-(float)dy, (float)dx) * 180.0f / 3.14159265f;
+    if (deg < 0.0f)
+        deg += 360.0f;
+    return (((int)floorf(deg / 45.0f + 0.5f)) % 8) * 45;
+}
+
+int LmStepsAlong(int dx, int dy, LmDir dir)
+{
+    const int lenSq = dir.dx * dir.dx + dir.dy * dir.dy;
+    if (lenSq == 0)
+        return 0;
+    const int steps = (int)floorf((float)(dx * dir.dx + dy * dir.dy) / (float)lenSq + 0.5f);
+    return (steps < 0) ? 0 : steps;
+}
+
 LevelGrid::LevelGrid()
     : m_w(0)
     , m_h(0)
@@ -147,6 +190,12 @@ void LevelGrid::BeginStroke()
     m_strokeActive = true;
 }
 
+void LevelGrid::RevertStroke()
+{
+    if (m_strokeActive && m_strokeSnapshot.size() == m_cells.size())
+        m_cells = m_strokeSnapshot;
+}
+
 void LevelGrid::EndStroke()
 {
     if (!m_strokeActive)
@@ -179,7 +228,25 @@ bool LevelGrid::Redo()
 
 // ------------------------------------------------------------ mesh builder
 
-void LevelGrid::BuildMesh(LmMesh& out, bool includeCeiling) const
+namespace {
+
+void ReverseQuad(LmQuad& q)
+{
+    const LmVec3 v0 = q.v[0];
+    const LmVec3 v1 = q.v[1];
+    q.v[0] = q.v[3];
+    q.v[1] = q.v[2];
+    q.v[2] = v1;
+    q.v[3] = v0;
+    q.n.x = -q.n.x;
+    q.n.y = -q.n.y;
+    q.n.z = -q.n.z;
+}
+
+} // namespace
+
+
+void LevelGrid::BuildMesh(LmMesh& out, bool includeCeiling, LmFacing facing) const
 {
     out.Clear();
 
@@ -286,20 +353,21 @@ void LevelGrid::BuildMesh(LmMesh& out, bool includeCeiling) const
             q.mat = LM_MAT_WALL;
             if (b)
             {
-                // floor on the +Z side, so the visible face looks toward -Z
-                q.n.x = 0.0f; q.n.y = 0.0f; q.n.z = -1.0f;
-                q.v[0].x = x1; q.v[0].y = 0.0f; q.v[0].z = z;
-                q.v[1].x = x0; q.v[1].y = 0.0f; q.v[1].z = z;
-                q.v[2].x = x0; q.v[2].y = hh;   q.v[2].z = z;
-                q.v[3].x = x1; q.v[3].y = hh;   q.v[3].z = z;
-            }
-            else
-            {
+                // floor is on the +Z side, so the face looks back into it
                 q.n.x = 0.0f; q.n.y = 0.0f; q.n.z = 1.0f;
                 q.v[0].x = x0; q.v[0].y = 0.0f; q.v[0].z = z;
                 q.v[1].x = x1; q.v[1].y = 0.0f; q.v[1].z = z;
                 q.v[2].x = x1; q.v[2].y = hh;   q.v[2].z = z;
                 q.v[3].x = x0; q.v[3].y = hh;   q.v[3].z = z;
+            }
+            else
+            {
+                // floor is on the -Z side
+                q.n.x = 0.0f; q.n.y = 0.0f; q.n.z = -1.0f;
+                q.v[0].x = x1; q.v[0].y = 0.0f; q.v[0].z = z;
+                q.v[1].x = x0; q.v[1].y = 0.0f; q.v[1].z = z;
+                q.v[2].x = x0; q.v[2].y = hh;   q.v[2].z = z;
+                q.v[3].x = x1; q.v[3].y = hh;   q.v[3].z = z;
             }
             out.quads.push_back(q);
         }
@@ -330,22 +398,41 @@ void LevelGrid::BuildMesh(LmMesh& out, bool includeCeiling) const
             q.mat = LM_MAT_WALL;
             if (b)
             {
-                // floor on the +X side, face looks toward -X
-                q.n.x = -1.0f; q.n.y = 0.0f; q.n.z = 0.0f;
-                q.v[0].x = xp; q.v[0].y = 0.0f; q.v[0].z = z0;
-                q.v[1].x = xp; q.v[1].y = 0.0f; q.v[1].z = z1;
-                q.v[2].x = xp; q.v[2].y = hh;   q.v[2].z = z1;
-                q.v[3].x = xp; q.v[3].y = hh;   q.v[3].z = z0;
-            }
-            else
-            {
+                // floor is on the +X side, so the face looks back into it
                 q.n.x = 1.0f; q.n.y = 0.0f; q.n.z = 0.0f;
                 q.v[0].x = xp; q.v[0].y = 0.0f; q.v[0].z = z1;
                 q.v[1].x = xp; q.v[1].y = 0.0f; q.v[1].z = z0;
                 q.v[2].x = xp; q.v[2].y = hh;   q.v[2].z = z0;
                 q.v[3].x = xp; q.v[3].y = hh;   q.v[3].z = z1;
             }
+            else
+            {
+                // floor is on the -X side
+                q.n.x = -1.0f; q.n.y = 0.0f; q.n.z = 0.0f;
+                q.v[0].x = xp; q.v[0].y = 0.0f; q.v[0].z = z0;
+                q.v[1].x = xp; q.v[1].y = 0.0f; q.v[1].z = z1;
+                q.v[2].x = xp; q.v[2].y = hh;   q.v[2].z = z1;
+                q.v[3].x = xp; q.v[3].y = hh;   q.v[3].z = z0;
+            }
             out.quads.push_back(q);
+        }
+    }
+
+    // Everything above is built facing inward, into the walkable space.
+    if (facing == LM_FACE_OUTWARD)
+    {
+        for (size_t i = 0; i < out.quads.size(); ++i)
+            ReverseQuad(out.quads[i]);
+    }
+    else if (facing == LM_FACE_BOTH)
+    {
+        const size_t n = out.quads.size();
+        out.quads.reserve(n * 2);
+        for (size_t i = 0; i < n; ++i)
+        {
+            LmQuad back = out.quads[i];
+            ReverseQuad(back);
+            out.quads.push_back(back);
         }
     }
 
@@ -553,10 +640,10 @@ bool LevelGrid::Load(const wchar_t* path)
     return true;
 }
 
-bool LevelGrid::ExportObj(const wchar_t* path, bool includeCeiling) const
+bool LevelGrid::ExportObj(const wchar_t* path, bool includeCeiling, LmFacing facing) const
 {
     LmMesh mesh;
-    BuildMesh(mesh, includeCeiling);
+    BuildMesh(mesh, includeCeiling, facing);
 
     const std::wstring wpath(path);
     const std::wstring mtlPath = ReplaceExtension(wpath, L".mtl");
@@ -648,4 +735,205 @@ bool LevelGrid::ExportObj(const wchar_t* path, bool includeCeiling) const
     mtl += "newmtl ceiling\r\nKd 0.35 0.36 0.40\r\nKa 0.10 0.10 0.10\r\nKs 0 0 0\r\n";
     WriteWholeFile(mtlPath.c_str(), mtl.data(), mtl.size());
     return true;
+}
+
+// ------------------------------------------------------------- FBX export
+//
+// ASCII FBX 7.4. One mesh node, per-polygon-vertex normals and three
+// materials. Written by hand -- the format is plain text, so no SDK.
+
+bool LevelGrid::ExportFbxAscii(const wchar_t* path, bool includeCeiling, LmFacing facing) const
+{
+    LmMesh mesh;
+    BuildMesh(mesh, includeCeiling, facing);
+    if (mesh.quads.empty())
+        return false;
+
+    // weld vertices exactly as the OBJ path does
+    std::unordered_map<uint64_t, int> vmap;
+    std::vector<LmVec3> verts;
+    std::vector<int> faceV(mesh.quads.size() * 4, 0);
+
+    for (size_t q = 0; q < mesh.quads.size(); ++q)
+    {
+        for (int i = 0; i < 4; ++i)
+        {
+            const uint64_t key = VertKey(mesh.quads[q].v[i]);
+            std::unordered_map<uint64_t, int>::iterator it = vmap.find(key);
+            int index;
+            if (it == vmap.end())
+            {
+                verts.push_back(mesh.quads[q].v[i]);
+                index = (int)verts.size() - 1;      // FBX indices are 0-based
+                vmap.insert(std::make_pair(key, index));
+            }
+            else
+            {
+                index = it->second;
+            }
+            faceV[q * 4 + i] = index;
+        }
+    }
+
+    const size_t polys = mesh.quads.size();
+    std::string f;
+    f.reserve(polys * 160 + verts.size() * 40 + 4096);
+
+    f += "; FBX 7.4.0 project file\r\n";
+    f += "; Written by LevelMaker\r\n";
+    f += "; ----------------------------------------------------\r\n\r\n";
+
+    f += "FBXHeaderExtension:  {\r\n";
+    f += "\tFBXHeaderVersion: 1003\r\n";
+    f += "\tFBXVersion: 7400\r\n";
+    f += "\tCreator: \"LevelMaker\"\r\n";
+    f += "}\r\n";
+
+    f += "GlobalSettings:  {\r\n";
+    f += "\tVersion: 1000\r\n";
+    f += "\tProperties70:  {\r\n";
+    f += "\t\tP: \"UpAxis\", \"int\", \"Integer\", \"\",1\r\n";
+    f += "\t\tP: \"UpAxisSign\", \"int\", \"Integer\", \"\",1\r\n";
+    f += "\t\tP: \"FrontAxis\", \"int\", \"Integer\", \"\",2\r\n";
+    f += "\t\tP: \"FrontAxisSign\", \"int\", \"Integer\", \"\",1\r\n";
+    f += "\t\tP: \"CoordAxis\", \"int\", \"Integer\", \"\",0\r\n";
+    f += "\t\tP: \"CoordAxisSign\", \"int\", \"Integer\", \"\",1\r\n";
+    f += "\t\tP: \"OriginalUpAxis\", \"int\", \"Integer\", \"\",1\r\n";
+    f += "\t\tP: \"OriginalUpAxisSign\", \"int\", \"Integer\", \"\",1\r\n";
+    f += "\t\tP: \"UnitScaleFactor\", \"double\", \"Number\", \"\",1\r\n";
+    f += "\t\tP: \"OriginalUnitScaleFactor\", \"double\", \"Number\", \"\",1\r\n";
+    f += "\t}\r\n";
+    f += "}\r\n\r\n";
+
+    f += "Documents:  {\r\n";
+    f += "\tCount: 1\r\n";
+    f += "\tDocument: 1000000, \"\", \"Scene\" {\r\n";
+    f += "\t\tProperties70:  {\r\n";
+    f += "\t\t\tP: \"SourceObject\", \"object\", \"\", \"\"\r\n";
+    f += "\t\t\tP: \"ActiveAnimStackName\", \"KString\", \"\", \"\", \"\"\r\n";
+    f += "\t\t}\r\n";
+    f += "\t\tRootNode: 0\r\n";
+    f += "\t}\r\n";
+    f += "}\r\n";
+    f += "References:  {\r\n}\r\n";
+
+    f += "Definitions:  {\r\n";
+    f += "\tVersion: 100\r\n";
+    f += "\tCount: 6\r\n";
+    f += "\tObjectType: \"GlobalSettings\" {\r\n\t\tCount: 1\r\n\t}\r\n";
+    f += "\tObjectType: \"Model\" {\r\n\t\tCount: 1\r\n\t}\r\n";
+    f += "\tObjectType: \"Geometry\" {\r\n\t\tCount: 1\r\n\t}\r\n";
+    f += "\tObjectType: \"Material\" {\r\n\t\tCount: 3\r\n\t}\r\n";
+    f += "}\r\n\r\n";
+
+    f += "Objects:  {\r\n";
+    f += "\tGeometry: 2000000, \"Geometry::level\", \"Mesh\" {\r\n";
+
+    AppendFmt(f, "\t\tVertices: *%u {\r\n\t\t\ta: ", (unsigned)(verts.size() * 3));
+    for (size_t i = 0; i < verts.size(); ++i)
+    {
+        AppendFmt(f, "%s%.4f,%.4f,%.4f", (i == 0) ? "" : ",",
+                  verts[i].x, verts[i].y, verts[i].z);
+        if ((i % 8) == 7 && i + 1 < verts.size())
+            f += "\r\n\t\t\t";
+    }
+    f += "\r\n\t\t}\r\n";
+
+    AppendFmt(f, "\t\tPolygonVertexIndex: *%u {\r\n\t\t\ta: ", (unsigned)(polys * 4));
+    for (size_t q = 0; q < polys; ++q)
+    {
+        // FBX marks the last index of a polygon by storing ~index
+        AppendFmt(f, "%s%d,%d,%d,%d", (q == 0) ? "" : ",",
+                  faceV[q * 4 + 0], faceV[q * 4 + 1], faceV[q * 4 + 2],
+                  -(faceV[q * 4 + 3] + 1));
+        if ((q % 8) == 7 && q + 1 < polys)
+            f += "\r\n\t\t\t";
+    }
+    f += "\r\n\t\t}\r\n";
+
+    f += "\t\tGeometryVersion: 124\r\n";
+
+    f += "\t\tLayerElementNormal: 0 {\r\n";
+    f += "\t\t\tVersion: 102\r\n";
+    f += "\t\t\tName: \"\"\r\n";
+    f += "\t\t\tMappingInformationType: \"ByPolygonVertex\"\r\n";
+    f += "\t\t\tReferenceInformationType: \"Direct\"\r\n";
+    AppendFmt(f, "\t\t\tNormals: *%u {\r\n\t\t\t\ta: ", (unsigned)(polys * 4 * 3));
+    for (size_t q = 0; q < polys; ++q)
+    {
+        const LmVec3& n = mesh.quads[q].n;
+        for (int k = 0; k < 4; ++k)
+            AppendFmt(f, "%s%.1f,%.1f,%.1f", (q == 0 && k == 0) ? "" : ",", n.x, n.y, n.z);
+        if ((q % 6) == 5 && q + 1 < polys)
+            f += "\r\n\t\t\t\t";
+    }
+    f += "\r\n\t\t\t}\r\n";
+    f += "\t\t}\r\n";
+
+    f += "\t\tLayerElementMaterial: 0 {\r\n";
+    f += "\t\t\tVersion: 101\r\n";
+    f += "\t\t\tName: \"\"\r\n";
+    f += "\t\t\tMappingInformationType: \"ByPolygon\"\r\n";
+    f += "\t\t\tReferenceInformationType: \"IndexToDirect\"\r\n";
+    AppendFmt(f, "\t\t\tMaterials: *%u {\r\n\t\t\t\ta: ", (unsigned)polys);
+    for (size_t q = 0; q < polys; ++q)
+    {
+        AppendFmt(f, "%s%d", (q == 0) ? "" : ",", mesh.quads[q].mat);
+        if ((q % 32) == 31 && q + 1 < polys)
+            f += "\r\n\t\t\t\t";
+    }
+    f += "\r\n\t\t\t}\r\n";
+    f += "\t\t}\r\n";
+
+    f += "\t\tLayer: 0 {\r\n";
+    f += "\t\t\tVersion: 100\r\n";
+    f += "\t\t\tLayerElement:  {\r\n";
+    f += "\t\t\t\tType: \"LayerElementNormal\"\r\n";
+    f += "\t\t\t\tTypedIndex: 0\r\n";
+    f += "\t\t\t}\r\n";
+    f += "\t\t\tLayerElement:  {\r\n";
+    f += "\t\t\t\tType: \"LayerElementMaterial\"\r\n";
+    f += "\t\t\t\tTypedIndex: 0\r\n";
+    f += "\t\t\t}\r\n";
+    f += "\t\t}\r\n";
+    f += "\t}\r\n";
+
+    f += "\tModel: 3000000, \"Model::level\", \"Mesh\" {\r\n";
+    f += "\t\tVersion: 232\r\n";
+    f += "\t\tProperties70:  {\r\n";
+    f += "\t\t\tP: \"Lcl Translation\", \"Lcl Translation\", \"\", \"A\",0,0,0\r\n";
+    f += "\t\t\tP: \"DefaultAttributeIndex\", \"int\", \"Integer\", \"\",0\r\n";
+    f += "\t\t}\r\n";
+    f += "\t\tShading: T\r\n";
+    f += "\t\tCulling: \"CullingOff\"\r\n";
+    f += "\t}\r\n";
+
+    static const float kMatColor[LM_MAT_COUNT][3] = {
+        { 0.55f, 0.57f, 0.61f },
+        { 0.82f, 0.79f, 0.73f },
+        { 0.34f, 0.35f, 0.40f }
+    };
+    for (int mat = 0; mat < LM_MAT_COUNT; ++mat)
+    {
+        AppendFmt(f, "\tMaterial: %d, \"Material::%s\", \"\" {\r\n", 4000001 + mat, MatName(mat));
+        f += "\t\tVersion: 102\r\n";
+        f += "\t\tShadingModel: \"phong\"\r\n";
+        f += "\t\tMultiLayer: 0\r\n";
+        f += "\t\tProperties70:  {\r\n";
+        AppendFmt(f, "\t\t\tP: \"DiffuseColor\", \"Color\", \"\", \"A\",%.3f,%.3f,%.3f\r\n",
+                  kMatColor[mat][0], kMatColor[mat][1], kMatColor[mat][2]);
+        f += "\t\t\tP: \"SpecularFactor\", \"Number\", \"\", \"A\",0\r\n";
+        f += "\t\t}\r\n";
+        f += "\t}\r\n";
+    }
+    f += "}\r\n\r\n";
+
+    f += "Connections:  {\r\n";
+    f += "\tC: \"OO\",3000000,0\r\n";           // model under the scene root
+    f += "\tC: \"OO\",2000000,3000000\r\n";     // geometry under the model
+    for (int mat = 0; mat < LM_MAT_COUNT; ++mat)
+        AppendFmt(f, "\tC: \"OO\",%d,3000000\r\n", 4000001 + mat);
+    f += "}\r\n";
+
+    return WriteWholeFile(path, f.data(), f.size());
 }

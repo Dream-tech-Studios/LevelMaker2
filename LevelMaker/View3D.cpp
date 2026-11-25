@@ -98,7 +98,7 @@ void EnsureMesh()
 {
     if (g_v.meshValid)
         return;
-    g_app.grid.BuildMesh(g_v.mesh, g_app.showCeiling);
+    g_app.grid.BuildMesh(g_v.mesh, g_app.showCeiling, g_app.facing);
     g_v.meshValid = true;
     if (!g_v.framed)
         FrameLevel(false);
@@ -163,7 +163,8 @@ void Render(HWND hwnd)
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     glEnable(GL_DEPTH_TEST);
-    if (g_app.cutaway)
+    // with both sides generated there is nothing to cut away
+    if (g_app.cutaway && g_app.facing != LM_FACE_BOTH)
     {
         glEnable(GL_CULL_FACE);
         glCullFace(GL_BACK);
