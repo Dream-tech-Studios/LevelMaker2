@@ -196,15 +196,20 @@ void Render(HWND hwnd)
     // filled pass
     glEnable(GL_POLYGON_OFFSET_FILL);
     glPolygonOffset(1.0f, 1.0f);
-    glBegin(GL_QUADS);
+    // triangles go out as fans so one pass covers both face kinds
+    glBegin(GL_TRIANGLES);
     for (size_t i = 0; i < g_v.mesh.quads.size(); ++i)
     {
         const LmQuad& q = g_v.mesh.quads[i];
         float col[3];
         ShadeColor(q.n, q.mat, col);
         glColor3f(col[0], col[1], col[2]);
-        for (int k = 0; k < 4; ++k)
-            glVertex3f(q.v[k].x, q.v[k].y, q.v[k].z);
+        for (int k = 2; k < q.nv; ++k)
+        {
+            glVertex3f(q.v[0].x,     q.v[0].y,     q.v[0].z);
+            glVertex3f(q.v[k - 1].x, q.v[k - 1].y, q.v[k - 1].z);
+            glVertex3f(q.v[k].x,     q.v[k].y,     q.v[k].z);
+        }
     }
     glEnd();
     glDisable(GL_POLYGON_OFFSET_FILL);
@@ -217,7 +222,7 @@ void Render(HWND hwnd)
         {
             const LmQuad& q = g_v.mesh.quads[i];
             glBegin(GL_LINE_LOOP);
-            for (int k = 0; k < 4; ++k)
+            for (int k = 0; k < q.nv; ++k)
                 glVertex3f(q.v[k].x, q.v[k].y, q.v[k].z);
             glEnd();
         }

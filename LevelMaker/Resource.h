@@ -41,6 +41,7 @@
 #define IDM_FACE_INWARD			32791
 #define IDM_FACE_OUTWARD		32792
 #define IDM_FACE_BOTH			32793
+#define IDM_SMOOTHDIAG			32794
 
 // brush presets: IDM_BRUSH_SIZE_BASE + n selects a brush n cells wide
 #define IDM_BRUSH_SIZE_BASE		32800

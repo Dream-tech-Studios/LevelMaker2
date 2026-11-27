@@ -7,6 +7,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <vector>
 
 namespace {
 
@@ -131,6 +132,34 @@ void EnsureBackBuffer(HDC hdc, int w, int h)
     g_v.memH = h;
 }
 
+// Mirrors of the mesh builder's edge tests, so the plan view stops drawing
+// exactly the boundaries a chamfer has eaten. 0 means no wall there.
+int PlanWallH(const LevelGrid& g, const uint8_t* cut, int gw, int x, int y)
+{
+    const bool above = g.IsFloor(x, y - 1);
+    const bool below = g.IsFloor(x, y);
+    if (above == below)
+        return 0;
+    if (!cut)
+        return below ? 1 : -1;
+    if (below)
+        return LmCutEatsN(cut[(size_t)y * gw + x]) ? 0 : 1;
+    return LmCutEatsS(cut[(size_t)(y - 1) * gw + x]) ? 0 : -1;
+}
+
+int PlanWallV(const LevelGrid& g, const uint8_t* cut, int gw, int x, int y)
+{
+    const bool left  = g.IsFloor(x - 1, y);
+    const bool right = g.IsFloor(x, y);
+    if (left == right)
+        return 0;
+    if (!cut)
+        return right ? 1 : -1;
+    if (right)
+        return LmCutEatsW(cut[(size_t)y * gw + x]) ? 0 : 1;
+    return LmCutEatsE(cut[(size_t)y * gw + (x - 1)]) ? 0 : -1;
+}
+
 void DrawPlan(HDC hdc, const RECT& rc)
 {
     const LevelGrid& grid = g_app.grid;
@@ -153,6 +182,13 @@ void DrawPlan(HDC hdc, const RECT& rc)
     if (cy0 < 0) cy0 = 0;
     if (cx1 > grid.Width()) cx1 = grid.Width();
     if (cy1 > grid.Height()) cy1 = grid.Height();
+
+    // the same chamfer map the mesh builder uses, so the plan view shows
+    // the diagonal the 3D preview will build
+    std::vector<uint8_t> cuts;
+    grid.BuildCutMap(cuts);
+    const int gw = grid.Width();
+    const uint8_t* cut = cuts.empty() ? NULL : &cuts[0];
 
     float sx = 0.0f, sy = 0.0f;
 
@@ -215,20 +251,21 @@ void DrawPlan(HDC hdc, const RECT& rc)
         DeleteObject(major);
     }
 
-    // floor: fill runs of cells per row so big halls cost a handful of calls
+    // floor: fill runs of cells per row so big halls cost a handful of calls.
+    // Chamfered cells sit the runs out and go down as triangles after.
     HBRUSH floorBrush = CreateSolidBrush(RGB(118, 124, 134));
     for (int y = cy0; y < cy1; ++y)
     {
         int x = cx0;
         while (x < cx1)
         {
-            if (!grid.IsFloor(x, y))
+            if (!grid.IsFloor(x, y) || (cut && cut[(size_t)y * gw + x]))
             {
                 ++x;
                 continue;
             }
             const int start = x;
-            while (x < cx1 && grid.IsFloor(x, y))
+            while (x < cx1 && grid.IsFloor(x, y) && !(cut && cut[(size_t)y * gw + x]))
                 ++x;
             float px0 = 0.0f, py0 = 0.0f, px1 = 0.0f, py1 = 0.0f;
             CellToScreen(rc, (float)start, (float)y, px0, py0);
@@ -240,6 +277,36 @@ void DrawPlan(HDC hdc, const RECT& rc)
             r.bottom = (int)ceilf(py1);
             FillRect(hdc, &r, floorBrush);
         }
+    }
+
+    if (cut)
+    {
+        HGDIOBJ oldBrush = SelectObject(hdc, floorBrush);
+        HPEN noPen = CreatePen(PS_SOLID, 1, RGB(118, 124, 134));
+        HGDIOBJ oldPen = SelectObject(hdc, noPen);
+        for (int y = cy0; y < cy1; ++y)
+        {
+            for (int x = cx0; x < cx1; ++x)
+            {
+                const int c = cut[(size_t)y * gw + x];
+                if (!c)
+                    continue;
+                float px[3], py[3];
+                LmCutTriangle(c, x, y, px, py);
+                POINT pts[3];
+                for (int k = 0; k < 3; ++k)
+                {
+                    float scrX = 0.0f, scrY = 0.0f;
+                    CellToScreen(rc, px[k], py[k], scrX, scrY);
+                    pts[k].x = (long)(scrX + 0.5f);
+                    pts[k].y = (long)(scrY + 0.5f);
+                }
+                Polygon(hdc, pts, 3);
+            }
+        }
+        SelectObject(hdc, oldPen);
+        SelectObject(hdc, oldBrush);
+        DeleteObject(noPen);
     }
     DeleteObject(floorBrush);
 
@@ -255,15 +322,14 @@ void DrawPlan(HDC hdc, const RECT& rc)
             int x = cx0;
             while (x <= cx1)
             {
-                const bool a = grid.IsFloor(x, y - 1);
-                const bool b = grid.IsFloor(x, y);
-                if (a == b || x >= cx1)
+                const int side = (x < cx1) ? PlanWallH(grid, cut, gw, x, y) : 0;
+                if (side == 0)
                 {
                     ++x;
                     continue;
                 }
                 const int start = x;
-                while (x < cx1 && grid.IsFloor(x, y - 1) == a && grid.IsFloor(x, y) == b)
+                while (x < cx1 && PlanWallH(grid, cut, gw, x, y) == side)
                     ++x;
                 float px0 = 0.0f, py0 = 0.0f, px1 = 0.0f, py1 = 0.0f;
                 CellToScreen(rc, (float)start, (float)y, px0, py0);
@@ -277,15 +343,14 @@ void DrawPlan(HDC hdc, const RECT& rc)
             int y = cy0;
             while (y <= cy1)
             {
-                const bool a = grid.IsFloor(x - 1, y);
-                const bool b = grid.IsFloor(x, y);
-                if (a == b || y >= cy1)
+                const int side = (y < cy1) ? PlanWallV(grid, cut, gw, x, y) : 0;
+                if (side == 0)
                 {
                     ++y;
                     continue;
                 }
                 const int start = y;
-                while (y < cy1 && grid.IsFloor(x - 1, y) == a && grid.IsFloor(x, y) == b)
+                while (y < cy1 && PlanWallV(grid, cut, gw, x, y) == side)
                     ++y;
                 float px0 = 0.0f, py0 = 0.0f, px1 = 0.0f, py1 = 0.0f;
                 CellToScreen(rc, (float)x, (float)start, px0, py0);
@@ -294,6 +359,28 @@ void DrawPlan(HDC hdc, const RECT& rc)
                 LineTo(hdc, (int)px1, (int)py1);
             }
         }
+        // the chamfer edges: one short line each, which joins into a single
+        // straight run on screen because the endpoints meet exactly
+        if (cut)
+        {
+            for (int y = cy0; y < cy1; ++y)
+            {
+                for (int x = cx0; x < cx1; ++x)
+                {
+                    const int c = cut[(size_t)y * gw + x];
+                    if (!c)
+                        continue;
+                    float ax = 0.0f, ay = 0.0f, bx = 0.0f, by = 0.0f;
+                    LmCutEdge(c, x, y, ax, ay, bx, by);
+                    float p0x = 0.0f, p0y = 0.0f, p1x = 0.0f, p1y = 0.0f;
+                    CellToScreen(rc, ax, ay, p0x, p0y);
+                    CellToScreen(rc, bx, by, p1x, p1y);
+                    MoveToEx(hdc, (int)(p0x + 0.5f), (int)(p0y + 0.5f), NULL);
+                    LineTo(hdc, (int)(p1x + 0.5f), (int)(p1y + 0.5f));
+                }
+            }
+        }
+
         SelectObject(hdc, oldPen);
         DeleteObject(wallPen);
     }

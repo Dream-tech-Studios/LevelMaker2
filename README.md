@@ -37,6 +37,7 @@ them to resize.
 | **S** | straight-line mode on / off |
 | **A** / **D** | turn the locked direction 45° left / right |
 | **Shift** + drag | one straight hall, angle snapped to the drag |
+| **B** | smooth diagonals on / off |
 
 ### Drawing straight
 
@@ -49,8 +50,27 @@ the occasional straight run, hold **Shift** while dragging and the angle snaps
 to whichever of the eight directions you are pulling toward.
 
 Runs at 0°, 90°, 180° and 270° come out perfectly rectangular — one floor quad
-and four wall quads. A 45° run is a regular staircase of cells, because the
-level is a grid; it is tidy, but it is not a smooth diagonal.
+and four wall quads.
+
+### Smooth diagonals
+
+The level is a grid, so a 45° hall is a staircase of cells, and left alone it
+builds a staircase of walls: ugly up close and worse to walk along. **Smooth
+diagonals**, on by default and toggled with **B** or **Settings › Smooth
+Diagonals**, fixes that. Where a cell sits on a 45° step — two neighbours
+meeting at a corner empty, the opposite two filled — it is cut in half along
+the diagonal, and a run of those halves lines up into one straight edge. A
+long diagonal hall then gets a single flat wall down each side.
+
+It only touches cells that are part of a diagonal run, so square rooms and
+90° halls come out exactly as they did; a lone outside corner stays square.
+Turning it off gives you the old stepped geometry back, and the setting is
+saved with the level.
+
+The mesh gets smaller, not bigger. A 24-cell 45° hall six cells wide is 130
+faces stepped (30 floor, 100 wall) and 37 smoothed (31 floor, 6 wall): the
+hundred little wall quads collapse into six long ones, and the floor costs
+one extra face.
 
 ### 3D preview
 
@@ -76,8 +96,8 @@ near walls and look down into the halls.
 * `LevelMaker.exe path\to\level.lvl` opens that level on startup
 
 Everything else lives under **Settings**: hall width, straight-line mode and
-its angle, which way the surfaces face, ceilings, wall height, and the world
-size of one cell.
+its angle, smooth diagonals, which way the surfaces face, ceilings, wall
+height, and the world size of one cell.
 
 ### Which way the faces look
 
@@ -105,6 +125,15 @@ from scratch:
   runs of those boundaries merge into single quads too. Junctions and doorways
   come out of this for free — where two halls cross, there is no boundary, so
   no wall.
+* **Diagonals**, when smoothing is on, replace the two outer edges of a
+  chamfered cell with its hypotenuse. A run of chamfers merges into one wall
+  quad, and the leftover half cells are folded into the floor rectangle beside
+  them as trapezoids wherever that still leaves a convex quad — so the floor
+  of a diagonal hall costs about as many faces as a straight one.
+
+Floors are quads except where a chamfer could not be folded into its
+neighbour; those come out as triangles, and the OBJ and FBX exports write them
+as three-sided faces.
 
 A corridor with a side room and a couple of branches typically lands around
 30 quads / 60 triangles. The exported OBJ is quads with per-face normals,

@@ -14,7 +14,9 @@ namespace {
 const size_t kMaxUndo = 64;
 
 const char kMagic[4] = { 'L', 'V', 'L', 'M' };
-const uint32_t kVersion = 1;
+// v2 appends one byte after the cells: the diagonal smoothing flag. v1 files
+// still load, and smoothing comes up on, the way it does for a new level.
+const uint32_t kVersion = 2;
 
 } // namespace
 
@@ -66,6 +68,7 @@ LevelGrid::LevelGrid()
     , m_h(0)
     , m_cellSize(1.0f)
     , m_wallHeight(3.0f)
+    , m_smoothDiagonals(true)
     , m_strokeActive(false)
 {
     Reset(kDefaultSize, kDefaultSize);
@@ -232,12 +235,22 @@ namespace {
 
 void ReverseQuad(LmQuad& q)
 {
-    const LmVec3 v0 = q.v[0];
-    const LmVec3 v1 = q.v[1];
-    q.v[0] = q.v[3];
-    q.v[1] = q.v[2];
-    q.v[2] = v1;
-    q.v[3] = v0;
+    if (q.nv == 3)
+    {
+        const LmVec3 v1 = q.v[1];
+        q.v[1] = q.v[2];
+        q.v[2] = v1;
+        q.v[3] = q.v[2];
+    }
+    else
+    {
+        const LmVec3 v0 = q.v[0];
+        const LmVec3 v1 = q.v[1];
+        q.v[0] = q.v[3];
+        q.v[1] = q.v[2];
+        q.v[2] = v1;
+        q.v[3] = v0;
+    }
     q.n.x = -q.n.x;
     q.n.y = -q.n.y;
     q.n.z = -q.n.z;
@@ -245,6 +258,173 @@ void ReverseQuad(LmQuad& q)
 
 } // namespace
 
+// --- diagonal smoothing helpers ------------------------------------------
+//
+// A chamfered cell keeps half of itself, so two of its four edges disappear
+// and the hypotenuse takes their place. Which two depends on the corner cut:
+
+bool LmCutEatsN(int c) { return c == LM_CUT_NW || c == LM_CUT_NE; }
+bool LmCutEatsE(int c) { return c == LM_CUT_NE || c == LM_CUT_SE; }
+bool LmCutEatsS(int c) { return c == LM_CUT_SE || c == LM_CUT_SW; }
+bool LmCutEatsW(int c) { return c == LM_CUT_NW || c == LM_CUT_SW; }
+
+// Step from one cell of a chamfer run to the next. NW and SE chamfers lie on
+// the same "/" line; NE and SW lie on the "\" line.
+void LmCutStep(int c, int& sx, int& sy)
+{
+    if (c == LM_CUT_NW || c == LM_CUT_SE) { sx = 1; sy = -1; }
+    else                                  { sx = 1; sy = 1; }
+}
+
+// The chamfer edge of one cell, as grid-space endpoints ordered so that the
+// wall quad built from them faces the floor that is left behind.
+void LmCutEdge(int c, int x, int y, float& ax, float& ay, float& bx, float& by)
+{
+    switch (c)
+    {
+    case LM_CUT_NW:                 // south-west corner -> north-east corner
+        ax = (float)x;       ay = (float)(y + 1);
+        bx = (float)(x + 1); by = (float)y;
+        break;
+    case LM_CUT_SE:                 // the same line, walked the other way
+        ax = (float)(x + 1); ay = (float)y;
+        bx = (float)x;       by = (float)(y + 1);
+        break;
+    case LM_CUT_NE:                 // north-west corner -> south-east corner
+        ax = (float)x;       ay = (float)y;
+        bx = (float)(x + 1); by = (float)(y + 1);
+        break;
+    default:                        // LM_CUT_SW, the same line reversed
+        ax = (float)(x + 1); ay = (float)(y + 1);
+        bx = (float)x;       by = (float)y;
+        break;
+    }
+}
+
+// Inward normal of that chamfer: it points at the half of the cell that is
+// still floor.
+LmVec3 LmCutNormal(int c)
+{
+    const float r = 0.70710678f;
+    LmVec3 n;
+    n.y = 0.0f;
+    switch (c)
+    {
+    case LM_CUT_NW: n.x =  r; n.z =  r; break;
+    case LM_CUT_NE: n.x = -r; n.z =  r; break;
+    case LM_CUT_SE: n.x = -r; n.z = -r; break;
+    default:        n.x =  r; n.z = -r; break;   // LM_CUT_SW
+    }
+    return n;
+}
+
+// The three corners the cell keeps, wound so the floor faces up. (The
+// ceiling copy reverses them.)
+void LmCutTriangle(int c, int x, int y, float px[3], float py[3])
+{
+    const float x0 = (float)x,       x1 = (float)(x + 1);
+    const float y0 = (float)y,       y1 = (float)(y + 1);
+    switch (c)
+    {
+    case LM_CUT_NW:
+        px[0] = x0; py[0] = y1;  px[1] = x1; py[1] = y1;  px[2] = x1; py[2] = y0;
+        break;
+    case LM_CUT_NE:
+        px[0] = x0; py[0] = y0;  px[1] = x0; py[1] = y1;  px[2] = x1; py[2] = y1;
+        break;
+    case LM_CUT_SE:
+        px[0] = x0; py[0] = y0;  px[1] = x0; py[1] = y1;  px[2] = x1; py[2] = y0;
+        break;
+    default:   // LM_CUT_SW
+        px[0] = x0; py[0] = y0;  px[1] = x1; py[1] = y1;  px[2] = x1; py[2] = y0;
+        break;
+    }
+}
+
+// A cell is a chamfer candidate when two neighbours that meet at a corner are
+// both empty and the opposite two are both floor -- that is exactly the step
+// of a staircase. The cell diagonally past the cut corner has to be empty too,
+// or the chamfer would open a gap at a pinch point.
+int LevelGrid::CutCandidate(int x, int y) const
+{
+    if (!IsFloor(x, y))
+        return LM_CUT_NONE;
+
+    const bool n = IsFloor(x, y - 1);
+    const bool s = IsFloor(x, y + 1);
+    const bool w = IsFloor(x - 1, y);
+    const bool e = IsFloor(x + 1, y);
+
+    if (!n && !w && s && e && !IsFloor(x - 1, y - 1)) return LM_CUT_NW;
+    if (!n && !e && s && w && !IsFloor(x + 1, y - 1)) return LM_CUT_NE;
+    if (!s && !e && n && w && !IsFloor(x + 1, y + 1)) return LM_CUT_SE;
+    if (!s && !w && n && e && !IsFloor(x - 1, y + 1)) return LM_CUT_SW;
+    return LM_CUT_NONE;
+}
+
+void LevelGrid::BuildCutMap(std::vector<uint8_t>& cuts) const
+{
+    cuts.clear();
+    if (!m_smoothDiagonals)
+        return;                 // left empty: callers take that as "no cuts"
+    cuts.assign((size_t)m_w * m_h, (uint8_t)LM_CUT_NONE);
+
+    // Every outside corner of every room is a candidate, so a second pass
+    // keeps only the ones that are part of a diagonal run. A lone corner --
+    // the corner of a square room, the end cap of a hall -- stays square.
+    std::vector<uint8_t> cand((size_t)m_w * m_h, (uint8_t)LM_CUT_NONE);
+    for (int y = 0; y < m_h; ++y)
+        for (int x = 0; x < m_w; ++x)
+            cand[(size_t)y * m_w + x] = (uint8_t)CutCandidate(x, y);
+
+    for (int y = 0; y < m_h; ++y)
+    {
+        for (int x = 0; x < m_w; ++x)
+        {
+            const size_t i = (size_t)y * m_w + x;
+            const int c = cand[i];
+            if (c == LM_CUT_NONE)
+                continue;
+
+            int sx = 0, sy = 0;
+            LmCutStep(c, sx, sy);
+            const bool ahead  = InBounds(x + sx, y + sy) &&
+                                cand[(size_t)(y + sy) * m_w + (x + sx)] == c;
+            const bool behind = InBounds(x - sx, y - sy) &&
+                                cand[(size_t)(y - sy) * m_w + (x - sx)] == c;
+            if (ahead || behind)
+                cuts[i] = (uint8_t)c;
+        }
+    }
+}
+
+
+// Is there a wall on the row boundary above cell (x, y), and which side is
+// the floor on? +1 for the cell below the line, -1 for the cell above it, 0
+// for no wall -- either side matching, or a chamfer having eaten that edge.
+int LevelGrid::WallSideH(const uint8_t* cut, int x, int y) const
+{
+    const bool above = IsFloor(x, y - 1);
+    const bool below = IsFloor(x, y);
+    if (above == below)
+        return 0;
+    if (below)
+        return (cut && LmCutEatsN(cut[(size_t)y * m_w + x])) ? 0 : 1;
+    return (cut && LmCutEatsS(cut[(size_t)(y - 1) * m_w + x])) ? 0 : -1;
+}
+
+// The same for the column boundary left of cell (x, y): +1 when the floor is
+// the cell to the right, -1 when it is the cell to the left.
+int LevelGrid::WallSideV(const uint8_t* cut, int x, int y) const
+{
+    const bool left  = IsFloor(x - 1, y);
+    const bool right = IsFloor(x, y);
+    if (left == right)
+        return 0;
+    if (right)
+        return (cut && LmCutEatsW(cut[(size_t)y * m_w + x])) ? 0 : 1;
+    return (cut && LmCutEatsE(cut[(size_t)y * m_w + (x - 1)])) ? 0 : -1;
+}
 
 void LevelGrid::BuildMesh(LmMesh& out, bool includeCeiling, LmFacing facing) const
 {
@@ -253,9 +433,26 @@ void LevelGrid::BuildMesh(LmMesh& out, bool includeCeiling, LmFacing facing) con
     const float cs = m_cellSize;
     const float hh = m_wallHeight;
 
+    // Diagonal smoothing: cells on a 45 degree staircase lose a corner, so
+    // the steps join into one straight edge. The map is empty when the
+    // setting is off, and every test below then behaves as it always did.
+    std::vector<uint8_t> cuts;
+    BuildCutMap(cuts);
+    const uint8_t* cut = cuts.empty() ? NULL : &cuts[0];
+
     // Floors (and ceilings): greedy rectangles over the filled cells, so a
-    // straight 40-cell hall is one quad instead of forty.
+    // straight 40-cell hall is one quad instead of forty. Chamfered cells sit
+    // the merge out and become single triangles afterwards.
     std::vector<uint8_t> used((size_t)m_w * m_h, 0);
+    std::vector<uint8_t> absorbed;
+    if (cut)
+    {
+        for (size_t i = 0; i < used.size(); ++i)
+            if (cut[i] != LM_CUT_NONE)
+                used[i] = 1;
+        absorbed.assign((size_t)m_w * m_h, 0);
+    }
+
     for (int y = 0; y < m_h; ++y)
     {
         int x = 0;
@@ -297,18 +494,81 @@ void LevelGrid::BuildMesh(LmMesh& out, bool includeCeiling, LmFacing facing) con
                 for (int i = 0; i < w; ++i)
                     used[(size_t)(y + j) * m_w + x + i] = 1;
 
-            const float x0 = (float)x * cs;
-            const float x1 = (float)(x + w) * cs;
-            const float z0 = (float)y * cs;
-            const float z1 = (float)(y + h) * cs;
+            // A one-cell-thick rectangle can swallow a chamfer sitting
+            // against either end, turning two faces into one trapezoid: the
+            // half cell shares that whole edge, so the union is still a
+            // convex quad. Without this a diagonal hall would be a strip
+            // plus a triangle at each end of every row or column.
+            float blx = (float)x,       brx = (float)(x + w);
+            float tlx = (float)x,       trx = (float)(x + w);
+            float tlz = (float)y,       trz = (float)y;
+            float blz = (float)(y + h), brz = (float)(y + h);
+
+            bool grewSideways = false;
+            if (cut && h == 1)
+            {
+                if (x > 0)
+                {
+                    const size_t li = (size_t)y * m_w + (x - 1);
+                    const int lc = cut[li];
+                    if (lc == LM_CUT_NW || lc == LM_CUT_SW)   // keeps its east edge
+                    {
+                        absorbed[li] = 1;
+                        grewSideways = true;
+                        if (lc == LM_CUT_NW) blx = (float)(x - 1);
+                        else                 tlx = (float)(x - 1);
+                    }
+                }
+                if (x + w < m_w)
+                {
+                    const size_t ri = (size_t)y * m_w + (x + w);
+                    const int rc = cut[ri];
+                    if (rc == LM_CUT_NE || rc == LM_CUT_SE)   // keeps its west edge
+                    {
+                        absorbed[ri] = 1;
+                        grewSideways = true;
+                        if (rc == LM_CUT_NE) brx = (float)(x + w + 1);
+                        else                 trx = (float)(x + w + 1);
+                    }
+                }
+            }
+            // The greedy pass tends to cut a diagonal band into one-cell
+            // columns, so the same trick has to work the other way up. Only
+            // one axis at a time, or a single cell could pick up chamfers on
+            // all four sides and stop being a quad.
+            if (cut && w == 1 && !grewSideways)
+            {
+                if (y > 0)
+                {
+                    const size_t ai = (size_t)(y - 1) * m_w + x;
+                    const int ac = cut[ai];
+                    if (ac == LM_CUT_NW || ac == LM_CUT_NE)   // keeps its south edge
+                    {
+                        absorbed[ai] = 1;
+                        if (ac == LM_CUT_NW) trz = (float)(y - 1);
+                        else                 tlz = (float)(y - 1);
+                    }
+                }
+                if (y + h < m_h)
+                {
+                    const size_t bi = (size_t)(y + h) * m_w + x;
+                    const int bc = cut[bi];
+                    if (bc == LM_CUT_SE || bc == LM_CUT_SW)   // keeps its north edge
+                    {
+                        absorbed[bi] = 1;
+                        if (bc == LM_CUT_SE) blz = (float)(y + h + 1);
+                        else                 brz = (float)(y + h + 1);
+                    }
+                }
+            }
 
             LmQuad q;
             q.mat = LM_MAT_FLOOR;
             q.n.x = 0.0f; q.n.y = 1.0f; q.n.z = 0.0f;
-            q.v[0].x = x0; q.v[0].y = 0.0f; q.v[0].z = z1;
-            q.v[1].x = x1; q.v[1].y = 0.0f; q.v[1].z = z1;
-            q.v[2].x = x1; q.v[2].y = 0.0f; q.v[2].z = z0;
-            q.v[3].x = x0; q.v[3].y = 0.0f; q.v[3].z = z0;
+            q.v[0].x = blx * cs; q.v[0].y = 0.0f; q.v[0].z = blz * cs;
+            q.v[1].x = brx * cs; q.v[1].y = 0.0f; q.v[1].z = brz * cs;
+            q.v[2].x = trx * cs; q.v[2].y = 0.0f; q.v[2].z = trz * cs;
+            q.v[3].x = tlx * cs; q.v[3].y = 0.0f; q.v[3].z = tlz * cs;
             out.quads.push_back(q);
 
             if (includeCeiling)
@@ -316,10 +576,10 @@ void LevelGrid::BuildMesh(LmMesh& out, bool includeCeiling, LmFacing facing) con
                 LmQuad c;
                 c.mat = LM_MAT_CEILING;
                 c.n.x = 0.0f; c.n.y = -1.0f; c.n.z = 0.0f;
-                c.v[0].x = x0; c.v[0].y = hh; c.v[0].z = z0;
-                c.v[1].x = x1; c.v[1].y = hh; c.v[1].z = z0;
-                c.v[2].x = x1; c.v[2].y = hh; c.v[2].z = z1;
-                c.v[3].x = x0; c.v[3].y = hh; c.v[3].z = z1;
+                c.v[0].x = tlx * cs; c.v[0].y = hh; c.v[0].z = tlz * cs;
+                c.v[1].x = trx * cs; c.v[1].y = hh; c.v[1].z = trz * cs;
+                c.v[2].x = brx * cs; c.v[2].y = hh; c.v[2].z = brz * cs;
+                c.v[3].x = blx * cs; c.v[3].y = hh; c.v[3].z = blz * cs;
                 out.quads.push_back(c);
             }
 
@@ -327,22 +587,69 @@ void LevelGrid::BuildMesh(LmMesh& out, bool includeCeiling, LmFacing facing) con
         }
     }
 
+    // The half cells left over from the chamfers: one floor triangle each.
+    if (cut)
+    {
+        for (int y = 0; y < m_h; ++y)
+        {
+            for (int x = 0; x < m_w; ++x)
+            {
+                const size_t i = (size_t)y * m_w + x;
+                const int c = cut[i];
+                if (c == LM_CUT_NONE || absorbed[i])
+                    continue;
+
+                float px[3], py[3];
+                LmCutTriangle(c, x, y, px, py);
+
+                LmQuad t;
+                t.nv = 3;
+                t.mat = LM_MAT_FLOOR;
+                t.n.x = 0.0f; t.n.y = 1.0f; t.n.z = 0.0f;
+                for (int k = 0; k < 3; ++k)
+                {
+                    t.v[k].x = px[k] * cs;
+                    t.v[k].y = 0.0f;
+                    t.v[k].z = py[k] * cs;
+                }
+                t.v[3] = t.v[2];
+                out.quads.push_back(t);
+
+                if (includeCeiling)
+                {
+                    LmQuad u;
+                    u.nv = 3;
+                    u.mat = LM_MAT_CEILING;
+                    u.n.x = 0.0f; u.n.y = -1.0f; u.n.z = 0.0f;
+                    for (int k = 0; k < 3; ++k)
+                    {
+                        u.v[k].x = px[2 - k] * cs;
+                        u.v[k].y = hh;
+                        u.v[k].z = py[2 - k] * cs;
+                    }
+                    u.v[3] = u.v[2];
+                    out.quads.push_back(u);
+                }
+            }
+        }
+    }
+
     // Walls that run along X: every boundary between grid row y-1 and row y
-    // where exactly one side is floor. Consecutive cells merge into one quad.
+    // where exactly one side is floor and neither side's chamfer has eaten
+    // it. Consecutive cells merge into one quad.
     for (int y = 0; y <= m_h; ++y)
     {
         int x = 0;
         while (x < m_w)
         {
-            const bool a = IsFloor(x, y - 1);
-            const bool b = IsFloor(x, y);
-            if (a == b)
+            const int side = WallSideH(cut, x, y);
+            if (side == 0)
             {
                 ++x;
                 continue;
             }
             const int start = x;
-            while (x < m_w && IsFloor(x, y - 1) == a && IsFloor(x, y) == b)
+            while (x < m_w && WallSideH(cut, x, y) == side)
                 ++x;
 
             const float x0 = (float)start * cs;
@@ -351,7 +658,7 @@ void LevelGrid::BuildMesh(LmMesh& out, bool includeCeiling, LmFacing facing) con
 
             LmQuad q;
             q.mat = LM_MAT_WALL;
-            if (b)
+            if (side > 0)
             {
                 // floor is on the +Z side, so the face looks back into it
                 q.n.x = 0.0f; q.n.y = 0.0f; q.n.z = 1.0f;
@@ -379,15 +686,14 @@ void LevelGrid::BuildMesh(LmMesh& out, bool includeCeiling, LmFacing facing) con
         int y = 0;
         while (y < m_h)
         {
-            const bool a = IsFloor(x - 1, y);
-            const bool b = IsFloor(x, y);
-            if (a == b)
+            const int side = WallSideV(cut, x, y);
+            if (side == 0)
             {
                 ++y;
                 continue;
             }
             const int start = y;
-            while (y < m_h && IsFloor(x - 1, y) == a && IsFloor(x, y) == b)
+            while (y < m_h && WallSideV(cut, x, y) == side)
                 ++y;
 
             const float z0 = (float)start * cs;
@@ -396,7 +702,7 @@ void LevelGrid::BuildMesh(LmMesh& out, bool includeCeiling, LmFacing facing) con
 
             LmQuad q;
             q.mat = LM_MAT_WALL;
-            if (b)
+            if (side > 0)
             {
                 // floor is on the +X side, so the face looks back into it
                 q.n.x = 1.0f; q.n.y = 0.0f; q.n.z = 0.0f;
@@ -415,6 +721,65 @@ void LevelGrid::BuildMesh(LmMesh& out, bool includeCeiling, LmFacing facing) con
                 q.v[3].x = xp; q.v[3].y = hh;   q.v[3].z = z0;
             }
             out.quads.push_back(q);
+        }
+    }
+
+    // Diagonal walls: one quad per run of chamfers, so a 45 degree hall gets
+    // a single flat wall down each side instead of a row of little steps.
+    if (cut)
+    {
+        std::vector<uint8_t> walked((size_t)m_w * m_h, 0);
+        for (int y = 0; y < m_h; ++y)
+        {
+            for (int x = 0; x < m_w; ++x)
+            {
+                const size_t i = (size_t)y * m_w + x;
+                if (walked[i] || cut[i] == LM_CUT_NONE)
+                    continue;
+
+                const int c = cut[i];
+                int sx = 0, sy = 0;
+                LmCutStep(c, sx, sy);
+
+                // back up to the first cell of the run, then walk it out
+                int fx = x, fy = y;
+                while (InBounds(fx - sx, fy - sy) &&
+                       cut[(size_t)(fy - sy) * m_w + (fx - sx)] == c)
+                {
+                    fx -= sx;
+                    fy -= sy;
+                }
+                int lx = fx, ly = fy;
+                walked[(size_t)ly * m_w + lx] = 1;
+                while (InBounds(lx + sx, ly + sy) &&
+                       cut[(size_t)(ly + sy) * m_w + (lx + sx)] == c)
+                {
+                    lx += sx;
+                    ly += sy;
+                    walked[(size_t)ly * m_w + lx] = 1;
+                }
+
+                // One edge spanning the whole run. SE and SW chamfers are
+                // wound against the step direction -- they face the other way
+                // along the same line -- so their quad starts at the last
+                // cell instead of the first.
+                const bool reversed = (c == LM_CUT_SE || c == LM_CUT_SW);
+                const int  sX = reversed ? lx : fx, sY = reversed ? ly : fy;
+                const int  eX = reversed ? fx : lx, eY = reversed ? fy : ly;
+
+                float ax, ay, bx, by, skipX, skipY;
+                LmCutEdge(c, sX, sY, ax, ay, skipX, skipY);
+                LmCutEdge(c, eX, eY, skipX, skipY, bx, by);
+
+                LmQuad q;
+                q.mat = LM_MAT_WALL;
+                q.n = LmCutNormal(c);
+                q.v[0].x = ax * cs; q.v[0].y = 0.0f; q.v[0].z = ay * cs;
+                q.v[1].x = bx * cs; q.v[1].y = 0.0f; q.v[1].z = by * cs;
+                q.v[2].x = bx * cs; q.v[2].y = hh;   q.v[2].z = by * cs;
+                q.v[3].x = ax * cs; q.v[3].y = hh;   q.v[3].z = ay * cs;
+                out.quads.push_back(q);
+            }
         }
     }
 
@@ -590,6 +955,7 @@ bool LevelGrid::Save(const wchar_t* path) const
     AppendRaw(blob, m_wallHeight);
     if (!m_cells.empty())
         blob.append((const char*)&m_cells[0], m_cells.size());
+    blob.push_back(m_smoothDiagonals ? (char)1 : (char)0);
     return WriteWholeFile(path, blob.data(), blob.size());
 }
 
@@ -613,7 +979,7 @@ bool LevelGrid::Load(const wchar_t* path)
     memcpy(&cellSize, &blob[16], 4);
     memcpy(&wallHeight, &blob[20], 4);
 
-    if (version != kVersion)
+    if (version != 1 && version != kVersion)
         return false;
     if (w < 8 || h < 8 || w > 1024 || h > 1024)
         return false;
@@ -625,6 +991,10 @@ bool LevelGrid::Load(const wchar_t* path)
     std::vector<uint8_t> cells(count, 0);
     for (size_t i = 0; i < count; ++i)
         cells[i] = blob[kHeader + i] ? (uint8_t)1 : (uint8_t)0;
+
+    // the flag byte is only there from v2 on
+    m_smoothDiagonals = (version < 2) ? true
+                      : (blob.size() > kHeader + count && blob[kHeader + count] != 0);
 
     m_w = (int)w;
     m_h = (int)h;
@@ -697,7 +1067,7 @@ bool LevelGrid::ExportObj(const wchar_t* path, bool includeCeiling, LmFacing fac
     std::string obj;
     obj.reserve(mesh.quads.size() * 48 + verts.size() * 32 + 256);
     obj += "# LevelMaker OBJ export\r\n";
-    AppendFmt(obj, "# %u quads, %u triangles, cell %.3f, wall height %.3f\r\n",
+    AppendFmt(obj, "# %u faces, %u triangles, cell %.3f, wall height %.3f\r\n",
               (unsigned)mesh.quads.size(), (unsigned)mesh.TriangleCount(),
               m_cellSize, m_wallHeight);
     obj += "mtllib " + mtlName + "\r\n";
@@ -706,7 +1076,7 @@ bool LevelGrid::ExportObj(const wchar_t* path, bool includeCeiling, LmFacing fac
     for (size_t i = 0; i < verts.size(); ++i)
         AppendFmt(obj, "v %.4f %.4f %.4f\r\n", verts[i].x, verts[i].y, verts[i].z);
     for (size_t i = 0; i < norms.size(); ++i)
-        AppendFmt(obj, "vn %.1f %.1f %.1f\r\n", norms[i].x, norms[i].y, norms[i].z);
+        AppendFmt(obj, "vn %.4f %.4f %.4f\r\n", norms[i].x, norms[i].y, norms[i].z);
 
     for (int mat = 0; mat < LM_MAT_COUNT; ++mat)
     {
@@ -718,9 +1088,14 @@ bool LevelGrid::ExportObj(const wchar_t* path, bool includeCeiling, LmFacing fac
             if (mesh.quads[q].mat != mat)
                 continue;
             const int n = faceN[q];
-            AppendFmt(obj, "f %d//%d %d//%d %d//%d %d//%d\r\n",
-                      faceV[q * 4 + 0], n, faceV[q * 4 + 1], n,
-                      faceV[q * 4 + 2], n, faceV[q * 4 + 3], n);
+            if (mesh.quads[q].nv == 3)
+                AppendFmt(obj, "f %d//%d %d//%d %d//%d\r\n",
+                          faceV[q * 4 + 0], n, faceV[q * 4 + 1], n,
+                          faceV[q * 4 + 2], n);
+            else
+                AppendFmt(obj, "f %d//%d %d//%d %d//%d %d//%d\r\n",
+                          faceV[q * 4 + 0], n, faceV[q * 4 + 1], n,
+                          faceV[q * 4 + 2], n, faceV[q * 4 + 3], n);
         }
     }
 
@@ -756,7 +1131,7 @@ bool LevelGrid::ExportFbxAscii(const wchar_t* path, bool includeCeiling, LmFacin
 
     for (size_t q = 0; q < mesh.quads.size(); ++q)
     {
-        for (int i = 0; i < 4; ++i)
+        for (int i = 0; i < mesh.quads[q].nv; ++i)
         {
             const uint64_t key = VertKey(mesh.quads[q].v[i]);
             std::unordered_map<uint64_t, int>::iterator it = vmap.find(key);
@@ -776,6 +1151,10 @@ bool LevelGrid::ExportFbxAscii(const wchar_t* path, bool includeCeiling, LmFacin
     }
 
     const size_t polys = mesh.quads.size();
+    size_t polyVerts = 0;               // triangles contribute 3, quads 4
+    for (size_t q = 0; q < polys; ++q)
+        polyVerts += (size_t)mesh.quads[q].nv;
+
     std::string f;
     f.reserve(polys * 160 + verts.size() * 40 + 4096);
 
@@ -839,13 +1218,17 @@ bool LevelGrid::ExportFbxAscii(const wchar_t* path, bool includeCeiling, LmFacin
     }
     f += "\r\n\t\t}\r\n";
 
-    AppendFmt(f, "\t\tPolygonVertexIndex: *%u {\r\n\t\t\ta: ", (unsigned)(polys * 4));
+    AppendFmt(f, "\t\tPolygonVertexIndex: *%u {\r\n\t\t\ta: ", (unsigned)polyVerts);
     for (size_t q = 0; q < polys; ++q)
     {
         // FBX marks the last index of a polygon by storing ~index
-        AppendFmt(f, "%s%d,%d,%d,%d", (q == 0) ? "" : ",",
-                  faceV[q * 4 + 0], faceV[q * 4 + 1], faceV[q * 4 + 2],
-                  -(faceV[q * 4 + 3] + 1));
+        if (mesh.quads[q].nv == 3)
+            AppendFmt(f, "%s%d,%d,%d", (q == 0) ? "" : ",",
+                      faceV[q * 4 + 0], faceV[q * 4 + 1], -(faceV[q * 4 + 2] + 1));
+        else
+            AppendFmt(f, "%s%d,%d,%d,%d", (q == 0) ? "" : ",",
+                      faceV[q * 4 + 0], faceV[q * 4 + 1], faceV[q * 4 + 2],
+                      -(faceV[q * 4 + 3] + 1));
         if ((q % 8) == 7 && q + 1 < polys)
             f += "\r\n\t\t\t";
     }
@@ -858,12 +1241,14 @@ bool LevelGrid::ExportFbxAscii(const wchar_t* path, bool includeCeiling, LmFacin
     f += "\t\t\tName: \"\"\r\n";
     f += "\t\t\tMappingInformationType: \"ByPolygonVertex\"\r\n";
     f += "\t\t\tReferenceInformationType: \"Direct\"\r\n";
-    AppendFmt(f, "\t\t\tNormals: *%u {\r\n\t\t\t\ta: ", (unsigned)(polys * 4 * 3));
+    AppendFmt(f, "\t\t\tNormals: *%u {\r\n\t\t\t\ta: ", (unsigned)(polyVerts * 3));
     for (size_t q = 0; q < polys; ++q)
     {
         const LmVec3& n = mesh.quads[q].n;
-        for (int k = 0; k < 4; ++k)
-            AppendFmt(f, "%s%.1f,%.1f,%.1f", (q == 0 && k == 0) ? "" : ",", n.x, n.y, n.z);
+        // %.1f was fine while every normal was an axis; the diagonal walls
+        // need the decimals
+        for (int k = 0; k < mesh.quads[q].nv; ++k)
+            AppendFmt(f, "%s%.4f,%.4f,%.4f", (q == 0 && k == 0) ? "" : ",", n.x, n.y, n.z);
         if ((q % 6) == 5 && q + 1 < polys)
             f += "\r\n\t\t\t\t";
     }

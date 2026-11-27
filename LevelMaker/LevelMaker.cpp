@@ -203,9 +203,11 @@ void DrawStrip(HWND hwnd, HDC hdc)
     static const wchar_t* kFacingName[] = { L"inward", L"outward", L"both sides" };
     wchar_t stats[200];
     swprintf(stats, 200,
-             L"hall %d  \x2022  faces %s  \x2022  %d cells  \x2022  %u quads  \x2022  %u tris",
-             g_app.brush, kFacingName[(int)g_app.facing], g_stats.cells,
-             (unsigned)g_stats.quads, (unsigned)g_stats.tris);
+             L"hall %d  \x2022  faces %s  \x2022  %s  \x2022  %d cells  \x2022  %u faces"
+             L"  \x2022  %u tris",
+             g_app.brush, kFacingName[(int)g_app.facing],
+             g_app.grid.SmoothDiagonals() ? L"smooth 45\x00B0" : L"stepped 45\x00B0",
+             g_stats.cells, (unsigned)g_stats.quads, (unsigned)g_stats.tris);
     RECT sr = rc;
     sr.right -= 12;
     sr.top += 7;
@@ -417,7 +419,9 @@ void ShowControls(HWND hwnd)
         L"STRAIGHT HALLS\n"
         L"    S                 -  lock drawing to one direction\n"
         L"    A / D            -  turn that direction 45 degrees left / right\n"
-        L"    Shift + drag  -  one straight hall, angle snapped to the drag\n\n"
+        L"    Shift + drag  -  one straight hall, angle snapped to the drag\n"
+        L"    B                 -  smooth diagonals: a 45 degree hall gets flat\n"
+        L"                            walls instead of a staircase of cells\n\n"
         L"3D PREVIEW (right)\n"
         L"    Left drag    -  orbit\n"
         L"    Right drag  -  pan\n"
@@ -458,6 +462,8 @@ void SyncMenu(HWND hwnd)
 
     CheckMenuItem(menu, IDM_STRAIGHT,
                   MF_BYCOMMAND | (g_app.straightMode ? MF_CHECKED : MF_UNCHECKED));
+    CheckMenuItem(menu, IDM_SMOOTHDIAG,
+                  MF_BYCOMMAND | (g_app.grid.SmoothDiagonals() ? MF_CHECKED : MF_UNCHECKED));
     CheckMenuRadioItem(menu, IDM_FACE_INWARD, IDM_FACE_BOTH,
                        IDM_FACE_INWARD + (int)g_app.facing, MF_BYCOMMAND);
     CheckMenuRadioItem(menu, IDM_ANGLE_BASE, IDM_ANGLE_BASE + 7,
@@ -578,6 +584,12 @@ bool HandleCommand(HWND hwnd, int id)
         InvalidateStrip(hwnd);
         return true;
 
+    case IDM_SMOOTHDIAG:
+        g_app.grid.SetSmoothDiagonals(!g_app.grid.SmoothDiagonals());
+        g_app.modified = true;
+        RefreshAll(true);
+        return true;
+
     case IDM_ROT_LEFT:    SetAngle(g_app.drawAngle + 45); return true;
     case IDM_ROT_RIGHT:   SetAngle(g_app.drawAngle - 45); return true;
 
@@ -619,6 +631,7 @@ void HandleKey(HWND hwnd, int vk)
     case 'C':      HandleCommand(hwnd, IDM_CEILING); break;
     case 'W':      HandleCommand(hwnd, IDM_WIREFRAME); break;
     case 'X':      HandleCommand(hwnd, IDM_CUTAWAY); break;
+    case 'B':      HandleCommand(hwnd, IDM_SMOOTHDIAG); break;
     default:       break;
     }
 }

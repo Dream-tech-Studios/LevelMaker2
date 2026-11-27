@@ -30,13 +30,32 @@ enum LmMaterial
     LM_MAT_COUNT
 };
 
-// One convex, axis-aligned quad. The mesh is quads on purpose: a hall traced
-// in this editor turns into a handful of big rectangles instead of a cell soup.
+// Diagonal smoothing: which corner of a cell is chamfered away. The chamfer
+// is a full-cell diagonal, so the cell keeps exactly half of itself, and a
+// run of them along a 45 degree staircase joins up into one straight edge.
+// Compass directions are plan-view ones: north is -y, west is -x.
+enum LmCut
+{
+    LM_CUT_NONE = 0,
+    LM_CUT_NW,      // keeps the south-east half
+    LM_CUT_NE,      // keeps the south-west half
+    LM_CUT_SE,      // keeps the north-west half
+    LM_CUT_SW       // keeps the north-east half
+};
+
+// One convex, planar face. The mesh is quads on purpose: a hall traced in
+// this editor turns into a handful of big rectangles instead of a cell soup.
+// Diagonal smoothing also emits triangles -- the half cells where a 45 degree
+// run cuts a corner off -- so nv says how many of v[] are real. A triangle
+// still fills v[3] (with a copy of v[2]) so naive four-vertex code works.
 struct LmQuad
 {
     LmVec3 v[4];
     LmVec3 n;
     int    mat;
+    int    nv;      // 3 or 4
+
+    LmQuad() : mat(LM_MAT_FLOOR), nv(4) {}
 };
 
 struct LmMesh
@@ -53,7 +72,13 @@ struct LmMesh
             quadsByMat[i] = 0;
     }
 
-    size_t TriangleCount() const { return quads.size() * 2; }
+    size_t TriangleCount() const
+    {
+        size_t t = 0;
+        for (size_t i = 0; i < quads.size(); ++i)
+            t += (quads[i].nv == 3) ? 1 : 2;
+        return t;
+    }
 };
 
 // Drawing directions for the plan view's straight-line mode. 0 degrees is
@@ -64,6 +89,25 @@ struct LmDir
     int dx;
     int dy;
 };
+
+// --- diagonal chamfers ---------------------------------------------------
+// Shared by the mesh builder and the plan view, so the drawing and the
+// geometry agree on what a chamfered cell looks like.
+
+// Which of the cell's four edges the chamfer has eaten.
+bool   LmCutEatsN(int cut);
+bool   LmCutEatsE(int cut);
+bool   LmCutEatsS(int cut);
+bool   LmCutEatsW(int cut);
+// Step from one cell of a chamfer run to the next one along the same line.
+void   LmCutStep(int cut, int& sx, int& sy);
+// The chamfer edge of cell (x, y) in grid units, wound so a wall built from
+// it faces the floor that is left.
+void   LmCutEdge(int cut, int x, int y, float& ax, float& ay, float& bx, float& by);
+// That wall's inward normal, in world space.
+LmVec3 LmCutNormal(int cut);
+// The three corners the cell keeps, wound for an upward-facing floor.
+void   LmCutTriangle(int cut, int x, int y, float px[3], float py[3]);
 
 LmDir LmDirForAngle(int degrees);
 // nearest of the eight directions to a drag, or fallbackDegrees if it is zero
@@ -112,6 +156,16 @@ public:
     void  SetCellSize(float s) { m_cellSize = s; }
     void  SetWallHeight(float h) { m_wallHeight = h; }
 
+    // --- diagonal smoothing ---------------------------------------------
+    // With this on, 45 degree staircases are chamfered into straight edges
+    // instead of coming out as a flight of steps.
+    bool SmoothDiagonals() const { return m_smoothDiagonals; }
+    void SetSmoothDiagonals(bool on) { m_smoothDiagonals = on; }
+
+    // One LmCut per cell, row major, w*h entries -- or empty when smoothing
+    // is off. The views use it to draw what the mesh will be.
+    void BuildCutMap(std::vector<uint8_t>& cuts) const;
+
     void BuildMesh(LmMesh& out, bool includeCeiling, LmFacing facing) const;
 
     bool Save(const wchar_t* path) const;
@@ -121,12 +175,16 @@ public:
 
 private:
     void PushUndo(const std::vector<uint8_t>& state);
+    int  CutCandidate(int x, int y) const;      // LM_CUT_*, ignoring runs
+    int  WallSideH(const uint8_t* cut, int x, int y) const;
+    int  WallSideV(const uint8_t* cut, int x, int y) const;
 
     int                  m_w;
     int                  m_h;
     std::vector<uint8_t> m_cells;
     float                m_cellSize;
     float                m_wallHeight;
+    bool                 m_smoothDiagonals;
 
     std::vector<std::vector<uint8_t> > m_undo;
     std::vector<std::vector<uint8_t> > m_redo;
